@@ -1,0 +1,476 @@
+import os, json, urllib.request, threading, time
+from typing import Any, Dict, List
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from ui.alert import AlertDialogBuilder
+from ui.bulletin import BulletinHelper
+from client_utils import send_text, get_last_fragment
+from android_utils import run_on_ui_thread
+from android.widget import EditText, LinearLayout, TextView
+from android.view import Gravity
+from android.text import InputType
+from org.telegram.messenger import AndroidUtilities
+from org.telegram.ui.ActionBar import Theme
+
+__id__ = "hm_menu"
+__name__ = "حماية مايكي"
+__description__ = "امر : \n .hm"
+__author__ = "@DRR_R2"
+__version__ = "2.0"
+__icon__ = "formybotshelper/24"
+
+
+JSON_URL = "https://raw.githubusercontent.com/Hmza1112617/mik/refs/heads/main/%D9%85.json"
+ROLES = ["مالك اساسي", "مالك", "منشئ", "مدير", "ادمن", "مميز"]
+
+FALLBACK_JSON = {
+    "قفل": {"اخرى": ["الكل"]},
+    "تفعيل": {"اخرى": []},
+    "ايزل": {"قفل": [], "تعطيل": [], "تبديل": [], "ادمن": []}
+}
+
+
+def _plugin_dir() -> str:
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return "/storage/emulated/0/Download/AyuGram"
+
+
+def _fetch_data() -> tuple:
+    data = None
+    try:
+        resp = urllib.request.urlopen(JSON_URL, timeout=8)
+        data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        try:
+            path = os.path.join(_plugin_dir(), "mikey_commands.json")
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = FALLBACK_JSON
+    if data is None:
+        data = FALLBACK_JSON
+    lock = data.get("قفل", {})
+    toggle = data.get("تفعيل", {})
+    izel = data.get("ايزل", {})
+    all_lock: List[str] = []
+    for cmds in lock.values():
+        for cmd in cmds:
+            if cmd not in all_lock:
+                all_lock.append(cmd)
+    all_toggle: List[str] = []
+    for cmds in toggle.values():
+        for cmd in cmds:
+            if cmd not in all_toggle:
+                all_toggle.append(cmd)
+    return lock, toggle, izel, all_lock, all_toggle
+
+
+class HMPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self._delay = 0.4
+        self.add_on_send_message_hook()
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        raw = params.message.strip() if isinstance(getattr(params, "message", None), str) else None
+        if raw is None:
+            return HookResult()
+        if not (raw == ".hm" or raw.startswith(".hm ")):
+            return HookResult()
+        peer = getattr(params, "peer", None)
+        if peer is None:
+            peer = getattr(params, "dialog_id", None)
+        if peer:
+            run_on_ui_thread(lambda: self._show_dialog(account, peer))
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    def _show_dialog(self, account: int, peer: int):
+        fragment = get_last_fragment()
+        if not fragment:
+            return
+        activity = fragment.getParentActivity()
+        if not activity:
+            return
+        self._main_menu(activity, account, peer)
+
+    def _main_menu(self, activity, account: int, peer: int):
+        self._lock, self._toggle, self._izel, self._all_lock, self._all_toggle = _fetch_data()
+        b = AlertDialogBuilder(activity)
+        b.set_title(".hm")
+        b.set_items(
+            ["حماية مايكي", "حماية ايزل"],
+            lambda d, w: (
+                d.dismiss(),
+                self._mikey_menu(activity, account, peer) if w == 0
+                else self._izel_menu(activity, account, peer),
+            ),
+        )
+        b.set_negative_button("لا", lambda d, w: d.dismiss())
+        b.show()
+
+    def _mikey_menu(self, activity, account: int, peer: int):
+        b = AlertDialogBuilder(activity)
+        b.set_title("حماية مايكي")
+        b.set_items(
+            ["حمايه كلش", "قفل الكل", "قفل", "فتح", "شغل", "طفي",
+             "فتح + طفي كلش", "قفل الكل مالك اساسي", "قفل امر + رتبه", "اعدادات"],
+            lambda d, w: self._on_mikey(d, w, activity, account, peer),
+        )
+        b.set_negative_button("رجع", lambda d, w: (
+            d.dismiss(), self._main_menu(activity, account, peer)
+        ))
+        b.show()
+
+    def _on_mikey(self, dlg, which: int, activity, account: int, peer: int):
+        dlg.dismiss()
+        back = self._mikey_menu
+        if which == 0:
+            self._confirm_with_eta(activity, peer, self._build_lock_everything(), "حماية كلش")
+        elif which == 1:
+            send_text(peer, "قفل الكل")
+        elif which == 2:
+            self._cmd_list(activity, account, peer, "قفل", self._all_lock, back)
+        elif which == 3:
+            self._cmd_list(activity, account, peer, "فتح", self._all_lock, back)
+        elif which == 4:
+            self._cmd_list(activity, account, peer, "تفعيل", self._all_toggle, back)
+        elif which == 5:
+            self._cmd_list(activity, account, peer, "تعطيل", self._all_toggle, back)
+        elif which == 6:
+            self._confirm_with_eta(activity, peer, self._build_open_disable_all(), "فتح + طفي كلش")
+        elif which == 7:
+            self._confirm_with_eta(activity, peer, self._build_lock_all_owner(), "قفل الكل مالك اساسي")
+        elif which == 8:
+            self._custom_cmd_input(activity, account, peer, back)
+        elif which == 9:
+            self._settings_menu(activity, account, peer, back)
+
+    def _izel_menu(self, activity, account: int, peer: int):
+        b = AlertDialogBuilder(activity)
+        b.set_title("حماية ايزل")
+        b.set_items(
+            ["حمايه كلش", "قفل الكل", "قفل", "فتح", "شغل", "طفي",
+             "فتح + طفي كلش", "قفل الكل مالك اساسي", "قفل امر + رتبه", "اعدادات"],
+            lambda d, w: self._on_izel(d, w, activity, account, peer),
+        )
+        b.set_negative_button("رجع", lambda d, w: (
+            d.dismiss(), self._main_menu(activity, account, peer)
+        ))
+        b.show()
+
+    def _on_izel(self, dlg, which: int, activity, account: int, peer: int):
+        dlg.dismiss()
+        back = self._izel_menu
+        izel_lock = self._izel.get("قفل", [])
+        izel_disable = self._izel.get("تعطيل", [])
+        izel_toggle = self._izel.get("تبديل", [])
+        if which == 0:
+            self._confirm_with_eta(activity, peer, self._build_izel_protection(), "حماية ايزل كلش")
+        elif which == 1:
+            send_text(peer, "قفل الكل")
+        elif which == 2:
+            self._cmd_list(activity, account, peer, "قفل", izel_lock, back)
+        elif which == 3:
+            self._cmd_list(activity, account, peer, "فتح", izel_lock, back)
+        elif which == 4:
+            self._cmd_list(activity, account, peer, "تفعيل", izel_toggle, back)
+        elif which == 5:
+            self._cmd_list(activity, account, peer, "تعطيل", izel_disable, back)
+        elif which == 6:
+            self._confirm_with_eta(activity, peer, self._build_izel_open_disable(), "فتح + طفي (ايزل)")
+        elif which == 7:
+            self._confirm_with_eta(activity, peer, self._build_izel_lock_owner(), "قفل الكل مالك اساسي (ايزل)")
+        elif which == 8:
+            self._custom_cmd_input(activity, account, peer, back)
+        elif which == 9:
+            self._settings_menu(activity, account, peer, back)
+
+    def _eta_text(self, count: int) -> str:
+        total = count * self._delay
+        if total < 60:
+            return f"≈ {total:.1f} ثانية"
+        mins = total / 60
+        if mins < 60:
+            return f"≈ {mins:.1f} دقيقة"
+        hours = mins / 60
+        return f"≈ {hours:.1f} ساعة"
+
+    def _confirm_with_eta(self, activity, peer: int, texts: List[str], label: str):
+        if not texts:
+            BulletinHelper.show_error("ماكو اوامر!")
+            return
+        count = len(texts)
+        eta = self._eta_text(count)
+
+        tv = TextView(activity)
+        tv.setGravity(Gravity.START)
+        tv.setTextSize(16)
+        tv.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+        tv.setText(f"عدد الأوامر: {count}\nالسرعة: {self._delay} ث\nالوقت: {eta}")
+        tv.setPadding(
+            AndroidUtilities.dp(16), AndroidUtilities.dp(12),
+            AndroidUtilities.dp(16), AndroidUtilities.dp(12),
+        )
+
+        b = AlertDialogBuilder(activity)
+        b.set_title(f"⏱ {label}")
+        b.set_view(tv, -2)
+        b.set_positive_button("⏱ يلا", lambda d, w: (
+            d.dismiss(),
+            BulletinHelper.show_info(f"بدأ {label} — {count} أمر"),
+            self._send_batch(peer, texts),
+        ))
+        b.set_negative_button("لا", lambda d, w: d.dismiss())
+        b.show()
+
+    def _send_batch(self, peer: int, texts: List[str]):
+        def _run():
+            for t in texts:
+                send_text(peer, t)
+                time.sleep(self._delay)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _cmd_list(self, activity, account: int, peer: int, action: str, cmds: List[str], back_callback=None):
+        if back_callback is None:
+            back_callback = self._mikey_menu
+        rank_set = set(self._izel.get("رتب", []))
+        b = AlertDialogBuilder(activity)
+        b.set_title(f"{action}")
+        b.set_items(
+            cmds,
+            lambda d, w: (
+                d.dismiss(),
+                send_text(peer, f"{action} {cmds[w]}"),
+                send_text(peer, "مالك اساسي") if action == "قفل" and cmds[w] in rank_set else None,
+            ),
+        )
+        b.set_negative_button("رجع", lambda d, w: (
+            d.dismiss(), back_callback(activity, account, peer)
+        ))
+        b.show()
+
+    def _build_izel_protection(self) -> List[str]:
+        izel = self._izel
+        texts: List[str] = []
+        texts.append("تفعيل التنظيف التلقائي")
+        texts.append("ضع وقت التنظيف 2")
+        texts.append("قفل الكل")
+        lock_feats = izel.get("قفل", [])
+        disable_feats = izel.get("تعطيل", [])
+        toggle_cmds = izel.get("تبديل", [])
+        admin_cmds = izel.get("ادمن", [])
+        rank_feats = set(izel.get("رتب", []))
+        for feat in lock_feats:
+            texts.append(f"قفل {feat}")
+            if feat in rank_feats:
+                texts.append("مالك اساسي")
+        for feat in disable_feats:
+            texts.append(f"تعطيل {feat}")
+        for feat in lock_feats:
+            texts.append(f"قفل امر قفل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر فتح {feat}")
+            texts.append("مالك اساسي")
+        for feat in disable_feats:
+            texts.append(f"قفل امر تفعيل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر تعطيل {feat}")
+            texts.append("مالك اساسي")
+        for feat in toggle_cmds:
+            texts.append(f"قفل امر تفعيل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر تعطيل {feat}")
+            texts.append("مالك اساسي")
+        for cmd in admin_cmds:
+            texts.append(f"قفل امر {cmd}")
+            texts.append("مالك اساسي")
+        return texts
+
+    def _build_izel_open_disable(self) -> List[str]:
+        izel = self._izel
+        texts: List[str] = []
+        for feat in izel.get("قفل", []):
+            texts.append(f"فتح {feat}")
+        for feat in izel.get("تعطيل", []):
+            texts.append(f"تعطيل {feat}")
+        return texts
+
+    def _build_izel_lock_owner(self) -> List[str]:
+        izel = self._izel
+        texts: List[str] = []
+        for feat in izel.get("قفل", []):
+            texts.append(f"قفل امر قفل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر فتح {feat}")
+            texts.append("مالك اساسي")
+        for feat in izel.get("تعطيل", []):
+            texts.append(f"قفل امر تفعيل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر تعطيل {feat}")
+            texts.append("مالك اساسي")
+        for feat in izel.get("تبديل", []):
+            texts.append(f"قفل امر تفعيل {feat}")
+            texts.append("مالك اساسي")
+            texts.append(f"قفل امر تعطيل {feat}")
+            texts.append("مالك اساسي")
+        for cmd in izel.get("ادمن", []):
+            texts.append(f"قفل امر {cmd}")
+            texts.append("مالك اساسي")
+        return texts
+
+    def _build_lock_everything(self) -> List[str]:
+        texts: List[str] = []
+        rank_set = set(self._izel.get("رتب", []))
+        for c in self._all_lock:
+            texts.append(f"قفل {c}")
+            if c in rank_set:
+                texts.append("مالك اساسي")
+        for c in self._all_toggle:
+            texts.append(f"تعطيل {c}")
+        for c in self._all_lock:
+            texts.append(f"قفل امر {c}")
+            texts.append("مالك اساسي")
+        for c in self._all_toggle:
+            texts.append(f"قفل امر {c}")
+            texts.append("مالك اساسي")
+        return texts
+
+    def _build_open_disable_all(self) -> List[str]:
+        texts: List[str] = []
+        for c in self._all_lock:
+            texts.append(f"فتح {c}")
+        for c in self._all_toggle:
+            texts.append(f"تعطيل {c}")
+        return texts
+
+    def _build_lock_all_owner(self) -> List[str]:
+        texts: List[str] = []
+        for c in self._all_lock:
+            texts.append(f"قفل امر {c}")
+            texts.append("مالك اساسي")
+        for c in self._all_toggle:
+            texts.append(f"قفل امر {c}")
+            texts.append("مالك اساسي")
+        return texts
+
+    def _settings_menu(self, activity, account: int, peer: int, back_callback=None):
+        if back_callback is None:
+            back_callback = self._mikey_menu
+
+        tv = TextView(activity)
+        tv.setGravity(Gravity.START)
+        tv.setTextSize(14)
+        tv.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+        tv.setPadding(
+            AndroidUtilities.dp(20), AndroidUtilities.dp(16),
+            AndroidUtilities.dp(20), AndroidUtilities.dp(8),
+        )
+        tv.setText(
+            f"⚡️ السرعة الحالية: {self._delay} ث\n\n"
+            f"⚠️ لا انصح بجعل السرعة 0.7 او اقل الا:\n"
+            f"• مشرف/مالك مع مميز: 0.3 ث\n"
+            f"• مشرف/مالك بدون مميز: 1.2 ث\n"
+            f"• ليس مشرف/مالك مع مميز: 0.4 ث\n"
+            f"• ليس مشرف/مالك ولا مميز: 4.2 ث"
+        )
+
+        b = AlertDialogBuilder(activity)
+        b.set_title("الاعدادات")
+        b.set_view(tv, -2)
+        b.set_positive_button("غير المجره", lambda d, w: (
+            d.dismiss(),
+            self._speed_input(activity, account, peer, back_callback),
+        ))
+        b.set_negative_button("رجع", lambda d, w: (
+            d.dismiss(), back_callback(activity, account, peer)
+        ))
+        b.show()
+
+    def _speed_input(self, activity, account: int, peer: int, back_callback=None):
+        edit = EditText(activity)
+        edit.setHint(str(self._delay))
+        edit.setGravity(Gravity.CENTER)
+        edit.setTextSize(18)
+        edit.setSingleLine(True)
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_NUMBER_FLAG_DECIMAL)
+
+        layout = LinearLayout(activity)
+        layout.setOrientation(LinearLayout.VERTICAL)
+        layout.setGravity(Gravity.CENTER)
+        layout.setPadding(
+            AndroidUtilities.dp(24), AndroidUtilities.dp(16),
+            AndroidUtilities.dp(24), AndroidUtilities.dp(8),
+        )
+        layout.addView(edit)
+
+        b = AlertDialogBuilder(activity)
+        b.set_title("سرعه بالثواني")
+        b.set_view(layout, AndroidUtilities.dp(60))
+        b.set_positive_button("خلص", lambda bld, bw: (
+            bld.dismiss(),
+            self._set_speed(activity, account, peer, edit.getText().toString().strip(), back_callback),
+        ))
+        b.set_negative_button("رجع", lambda bld, bw: (
+            bld.dismiss(), self._settings_menu(activity, account, peer, back_callback)
+        ))
+        b.show()
+
+    def _set_speed(self, activity, account: int, peer: int, val: str, back_callback=None):
+        try:
+            d = float(val)
+            if d >= 0:
+                self._delay = d
+        except Exception:
+            pass
+        self._settings_menu(activity, account, peer, back_callback)
+
+    def _custom_cmd_input(self, activity, account: int, peer: int, back_callback=None):
+        if back_callback is None:
+            back_callback = self._mikey_menu
+        edit = EditText(activity)
+        edit.setHint("اسم الامر")
+        edit.setGravity(Gravity.CENTER)
+        edit.setTextSize(18)
+        edit.setSingleLine(True)
+        edit.setInputType(InputType.TYPE_CLASS_TEXT)
+
+        layout = LinearLayout(activity)
+        layout.setOrientation(LinearLayout.VERTICAL)
+        layout.setGravity(Gravity.CENTER)
+        layout.setPadding(
+            AndroidUtilities.dp(24), AndroidUtilities.dp(16),
+            AndroidUtilities.dp(24), AndroidUtilities.dp(8),
+        )
+        layout.addView(edit)
+
+        b = AlertDialogBuilder(activity)
+        b.set_title("امر مخصص")
+        b.set_view(layout, AndroidUtilities.dp(60))
+        b.set_positive_button("يلا", lambda bld, bw: (
+            bld.dismiss(),
+            self._on_custom_done(activity, account, peer, edit.getText().toString().strip(), back_callback),
+        ))
+        b.set_negative_button("رجع", lambda bld, bw: (
+            bld.dismiss(), back_callback(activity, account, peer)
+        ))
+        b.show()
+
+    def _on_custom_done(self, activity, account: int, peer: int, cmd: str, back_callback=None):
+        if not cmd:
+            self._custom_cmd_input(activity, account, peer, back_callback)
+            return
+        self._role_menu(account, peer, cmd)
+
+    def _role_menu(self, account: int, peer: int, cmd_name: str):
+        b = AlertDialogBuilder(get_last_fragment().getParentActivity())
+        b.set_title(f"شنو الرتبه للامر ↤︎ {cmd_name}")
+        b.set_items(
+            ROLES,
+            lambda d, w: (
+                d.dismiss(),
+                send_text(peer, f"قفل امر {cmd_name}"),
+                send_text(peer, ROLES[w]),
+            ),
+        )
+        b.set_negative_button("رجع", lambda d, w: d.dismiss())
+        b.show()
