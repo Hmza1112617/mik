@@ -15,7 +15,7 @@ __id__ = "hm_menu"
 __name__ = "حماية مايكي"
 __description__ = "امر : \n .hm"
 __author__ = "@DRR_R2"
-__version__ = "2.0"
+__version__ = "2.1"
 __icon__ = "formybotshelper/24"
 
 
