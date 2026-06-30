@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 from base_plugin import BasePlugin, HookResult, HookStrategy
 from ui.alert import AlertDialogBuilder
 from ui.bulletin import BulletinHelper
-from client_utils import send_text, get_last_fragment
+from client_utils import send_text, get_last_fragment, run_on_queue
 from android_utils import run_on_ui_thread
 from android.widget import EditText, LinearLayout, TextView
 from android.view import Gravity
@@ -70,33 +70,47 @@ def _fetch_data() -> tuple:
 class HMPlugin(BasePlugin):
     def on_plugin_load(self):
         self._delay = 0.4
-        self._check_self_update()
         self.add_on_send_message_hook()
+        run_on_queue(lambda: self._check_self_update(), delay=3000)
+
+    def _find_self_path(self) -> str:
+        try:
+            p = os.path.abspath(__file__)
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+        for name in ["hm_menu.py", "hm_menu.plugin"]:
+            p = os.path.join(_plugin_dir(), name)
+            if os.path.exists(p):
+                return p
+        return ""
 
     def _check_self_update(self):
         try:
-            resp = urllib.request.urlopen(PLUGIN_URL, timeout=8)
+            resp = urllib.request.urlopen(PLUGIN_URL, timeout=10)
             remote = resp.read().decode("utf-8")
             match = re.search(r'__version__\s*=\s*"([^"]+)"', remote)
             if not match:
+                self.log("_check_self_update: ما لقيته في الملف البعيد")
                 return
             remote_ver = match.group(1)
+            self.log(f"_check_self_update: المحلي={__version__} | البعيد={remote_ver}")
             if remote_ver == __version__:
+                self.log("نفس الاصدار، لا داعي للتحديث")
                 return
-            plugin_path = None
-            try:
-                plugin_path = os.path.abspath(__file__)
-            except Exception:
-                plugin_path = os.path.join(_plugin_dir(), "hm_menu.py")
-            if not plugin_path or not os.path.exists(plugin_path):
-                plugin_path = os.path.join(_plugin_dir(), "hm_menu.plugin")
+            plugin_path = self._find_self_path()
+            if not plugin_path:
+                self.log("ما لقيته مسار الكتابة!")
+                return
             with open(plugin_path, "w", encoding="utf-8") as f:
                 f.write(remote)
+            self.log(f"تمت الكتابة في {plugin_path}")
             run_on_ui_thread(lambda: BulletinHelper.show_info(
-                f"تم التحديث v{__version__} ← v{remote_ver}! اعد تحميل البلوقن"
+                f"✅ تم التحديث v{__version__} ← v{remote_ver}!\nاعد تحميل البلوقن"
             ))
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"_check_self_update: {e}")
 
     def on_send_message_hook(self, account: int, params: Any) -> HookResult:
         raw = params.message.strip() if isinstance(getattr(params, "message", None), str) else None
