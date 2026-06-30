@@ -1,4 +1,4 @@
-import os, json, urllib.request, threading, time, re, io
+import os, json, urllib.request, threading, time, re
 from typing import Any, Dict, List
 from base_plugin import BasePlugin, HookResult, HookStrategy
 from ui.alert import AlertDialogBuilder
@@ -15,7 +15,7 @@ __id__ = "hm_menu"
 __name__ = "حماية مايكي"
 __description__ = "امر : \n .hm"
 __author__ = "@DRR_R2"
-__version__ = "4.0"
+__version__ = "3.0"
 __icon__ = "formybotshelper/24"
 
 
@@ -73,6 +73,57 @@ class HMPlugin(BasePlugin):
         self.add_on_send_message_hook()
         run_on_queue(lambda: self._check_self_update(), delay=3000)
 
+    def create_settings(self) -> List[Any]:
+        from ui.settings import Header, Text
+        return [
+            Header(text="حماية مايكي"),
+            Text(text=f"الاصدار: v{__version__}", icon="msg_info"),
+            Text(text="فحص التحديث", icon="msg_update",
+                 create_sub_fragment=self._settings_update_page),
+
+        ]
+
+    def _settings_update_page(self) -> List[Any]:
+        from ui.settings import Header, Text
+        try:
+            resp = urllib.request.urlopen(PLUGIN_URL, timeout=10)
+            remote = resp.read().decode("utf-8")
+            match = re.search(r'__version__\s*=\s*"([^"]+)"', remote)
+            if not match:
+                return [
+                    Header(text="فحص التحديث"),
+                    Text(text=f"الاصدار الحالي: v{__version__}", icon="msg_info"),
+                    Text(text="❌ ما لقيته اصدار بالملف البعيد", red=True),
+                ]
+            remote_ver = match.group(1)
+            if remote_ver == __version__:
+                return [
+                    Header(text="فحص التحديث"),
+                    Text(text=f"الاصدار الحالي: v{__version__}", icon="msg_info"),
+                    Text(text=f"اخر اصدار: v{remote_ver}", icon="msg_verified"),
+                    Text(text="✅ محدث", icon="msg_verified"),
+                ]
+            plugin_path = self._find_self_path()
+            if not plugin_path:
+                return [
+                    Header(text="فحص التحديث"),
+                    Text(text=f"الاصدار الحالي: v{__version__}", icon="msg_info"),
+                    Text(text=f"❌ ما لقيته مسار للبلوقن", red=True),
+                ]
+            with open(plugin_path, "w", encoding="utf-8") as f:
+                f.write(remote)
+            return [
+                Header(text="✅ تم التحديث"),
+                Text(text=f"v{__version__} ← v{remote_ver}", icon="msg_update"),
+                Text(text="اعد تحميل البلوقن", icon="msg_help"),
+            ]
+        except Exception as e:
+            return [
+                Header(text="فحص التحديث"),
+                Text(text=f"الاصدار الحالي: v{__version__}", icon="msg_info"),
+                Text(text=f"❌ {e}", red=True),
+            ]
+
     def _find_self_path(self) -> str:
         try:
             p = os.path.abspath(__file__)
@@ -92,25 +143,20 @@ class HMPlugin(BasePlugin):
             remote = resp.read().decode("utf-8")
             match = re.search(r'__version__\s*=\s*"([^"]+)"', remote)
             if not match:
-                self.log("_check_self_update: ما لقيته في الملف البعيد")
                 return
             remote_ver = match.group(1)
-            self.log(f"_check_self_update: المحلي={__version__} | البعيد={remote_ver}")
             if remote_ver == __version__:
-                self.log("نفس الاصدار، لا داعي للتحديث")
                 return
             plugin_path = self._find_self_path()
             if not plugin_path:
-                self.log("ما لقيته مسار الكتابة!")
                 return
             with open(plugin_path, "w", encoding="utf-8") as f:
                 f.write(remote)
-            self.log(f"تمت الكتابة في {plugin_path}")
             run_on_ui_thread(lambda: BulletinHelper.show_info(
                 f"✅ تم التحديث v{__version__} ← v{remote_ver}!\nاعد تحميل البلوقن"
             ))
-        except Exception as e:
-            self.log(f"_check_self_update: {e}")
+        except Exception:
+            pass
 
     def on_send_message_hook(self, account: int, params: Any) -> HookResult:
         raw = params.message.strip() if isinstance(getattr(params, "message", None), str) else None
@@ -400,147 +446,14 @@ class HMPlugin(BasePlugin):
         b = AlertDialogBuilder(activity)
         b.set_title("الاعدادات")
         b.set_items(
-            ["غير المجره", "فحص التحديث"],
+            ["غير المجره"],
             lambda d, w: (
                 d.dismiss(),
-                self._speed_input(activity, account, peer, back_callback) if w == 0
-                else self._update_debug(activity, account, peer, back_callback),
+                self._speed_input(activity, account, peer, back_callback),
             ),
         )
         b.set_negative_button("رجع", lambda d, w: (
             d.dismiss(), back_callback(activity, account, peer)
-        ))
-        b.show()
-
-    def _update_debug(self, activity, account: int, peer: int, back_callback=None):
-        if back_callback is None:
-            back_callback = self._mikey_menu
-        lines: List[str] = []
-        lines.append(f"🔹 الاصدار المحلي: v{__version__}")
-        lines.append(f"🔹 الاصدار البعيد: ...جاري الفحص")
-        lines.append("")
-        try:
-            p = os.path.abspath(__file__)
-            lines.append(f"📁 __file__: {p}")
-            lines.append(f"📁 موجود: {os.path.exists(p)}")
-        except Exception as e:
-            lines.append(f"📁 __file__: خطأ {e}")
-        p2 = _plugin_dir()
-        lines.append(f"📁 plugin_dir: {p2}")
-        for name in ["hm_menu.py", "hm_menu.plugin"]:
-            fp = os.path.join(p2, name)
-            lines.append(f"📁 {name}: موجود={os.path.exists(fp)}")
-        lines.append("")
-        lines.append("🌐 جلب التحديث...")
-
-        tv = TextView(activity)
-        tv.setGravity(Gravity.START)
-        tv.setTextSize(13)
-        tv.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-        tv.setText("\n".join(lines))
-        tv.setPadding(
-            AndroidUtilities.dp(16), AndroidUtilities.dp(12),
-            AndroidUtilities.dp(16), AndroidUtilities.dp(12),
-        )
-
-        b = AlertDialogBuilder(activity)
-        b.set_title("🔍 فحص التحديث")
-        b.set_view(tv, -2)
-        b.set_positive_button("فحص الان", lambda d, w: (
-            d.dismiss(),
-            self._do_update_check(activity, account, peer, back_callback),
-        ))
-        b.set_negative_button("رجع", lambda d, w: (
-            d.dismiss(), self._settings_menu(activity, account, peer, back_callback)
-        ))
-        b.show()
-
-    def _do_update_check(self, activity, account: int, peer: int, back_callback=None):
-        if back_callback is None:
-            back_callback = self._mikey_menu
-        log_buf = io.StringIO()
-        def log_line(msg):
-            log_buf.write(msg + "\n")
-            self.log(msg)
-
-        log_line(f"الاصدار المحلي: v{__version__}")
-
-        # مسار الملف
-        plugin_path = ""
-        try:
-            plugin_path = os.path.abspath(__file__)
-            log_line(f"__file__: {plugin_path}")
-            log_line(f"  موجود: {os.path.exists(plugin_path)}")
-        except Exception as e:
-            log_line(f"__file__: {e}")
-        if not plugin_path or not os.path.exists(plugin_path):
-            for name in ["hm_menu.py", "hm_menu.plugin"]:
-                p = os.path.join(_plugin_dir(), name)
-                if os.path.exists(p):
-                    plugin_path = p
-                    log_line(f"وجدنا بديل: {p}")
-                    break
-        if not plugin_path or not os.path.exists(plugin_path):
-            plugin_path = os.path.join(_plugin_dir(), "hm_menu.py")
-            log_line(f"اخر خيار: {plugin_path}")
-
-        # جلب الاصدار البعيد
-        try:
-            log_line("جار جلب الملف البعيد...")
-            resp = urllib.request.urlopen(PLUGIN_URL, timeout=10)
-            remote = resp.read().decode("utf-8")
-            log_line(f"تم جلب {len(remote)} حرف")
-            match = re.search(r'__version__\s*=\s*"([^"]+)"', remote)
-            if match:
-                remote_ver = match.group(1)
-                log_line(f"الاصدار البعيد: v{remote_ver}")
-            else:
-                log_line("ما لقيته اصدار في الملف البعيد!")
-                remote_ver = ""
-        except Exception as e:
-            log_line(f"خطأ جلب البعيد: {e}")
-            remote_ver = ""
-
-        # مقارنة
-        result_lines = []
-        if remote_ver and remote_ver != __version__:
-            # في تحديث
-            log_line("في تحديث! بدأ التحميل...")
-            try:
-                with open(plugin_path, "w", encoding="utf-8") as f:
-                    f.write(remote)
-                log_line(f"تمت الكتابة الى {plugin_path}")
-                result_lines.append(f"✅ تم التحديث v{__version__} ← v{remote_ver}!")
-                result_lines.append("اعد تحميل البلوقن من الاعدادات")
-            except Exception as e:
-                log_line(f"خطأ بالكتابة: {e}")
-                result_lines.append(f"❌ فشلت الكتابة: {e}")
-        elif remote_ver:
-            log_line("نفس الاصدار، لا داعي للتحديث")
-            result_lines.append("✅ البلوقن محدث لآخر اصدار")
-        else:
-            log_line("ما وصلنا الاصدار البعيد")
-            result_lines.append("❌ ما وصلنا الاصدار البعيد")
-
-        log_line("انتهى")
-        full_log = log_buf.getvalue()
-
-        tv = TextView(activity)
-        tv.setGravity(Gravity.START)
-        tv.setTextSize(12)
-        tv.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-        tv.setText("\n".join(result_lines) + "\n\n--- Log ---\n" + full_log)
-        tv.setPadding(
-            AndroidUtilities.dp(12), AndroidUtilities.dp(8),
-            AndroidUtilities.dp(12), AndroidUtilities.dp(8),
-        )
-
-        b = AlertDialogBuilder(activity)
-        b.set_title("🔍 نتيجة الفحص")
-        b.set_view(tv, -2)
-        b.set_positive_button("حسنا", lambda d, w: d.dismiss())
-        b.set_negative_button("رجوع", lambda d, w: (
-            d.dismiss(), self._settings_menu(activity, account, peer, back_callback)
         ))
         b.show()
 
